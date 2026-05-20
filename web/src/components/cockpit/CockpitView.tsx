@@ -39,6 +39,7 @@ import {
 } from "./CockpitRuntime";
 import { Composer } from "./Composer";
 import { ContextPrimerBanner } from "./ContextPrimerBanner";
+import { RateLimitRecoveryModal } from "./RateLimitRecoveryModal";
 import { Markdown } from "./Markdown";
 import {
   isQueuedPromptLong,
@@ -164,6 +165,17 @@ function CockpitChrome({
   const [primerPrefill, setPrimerPrefill] = useState<
     { id: string; text: string } | null
   >(null);
+  // Rate-limit recovery modal toggle. Opened from the rate-limit row
+  // in `SystemNotices`; the modal owns the agent picker and the
+  // switch / primer-fetch round-trip. Wrapped in a tiny exported
+  // component so the wiring (banner trigger -> modal open -> prefill
+  // dispatch) is testable in isolation without mounting the full
+  // CockpitView (which depends on many hooks). See #1282.
+  const recoveryHandoffPrefill = (text: string) =>
+    setPrimerPrefill({
+      id: `rate-limit-recovery-${Date.now()}`,
+      text,
+    });
 
   // Browser-side approval chime. Fires once on the 0 -> >=1 edge of
   // pendingApprovals; complements the OS push (delivered via the SW
@@ -221,19 +233,28 @@ function CockpitChrome({
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
       <PlanStrip plan={state.plan} />
 
-      {(status !== "open" || state.lagged || state.rateLimit || reconnecting) && (
-        <SystemNotices
-          status={status}
-          lagged={state.lagged}
-          rateLimit={state.rateLimit}
-          hasEverOpened={hasEverOpened}
-          reconnecting={reconnecting}
-          retryCount={retryCount}
-          retryCountdown={retryCountdown}
-          maxRetries={maxRetries}
-          manualReconnect={manualReconnect}
-        />
-      )}
+      <RateLimitRecoverySection
+        sessionId={sessionId}
+        currentAgent={state.agent}
+        onPrefill={recoveryHandoffPrefill}
+      >
+        {({ onSwitchAgent }) =>
+          (status !== "open" || state.lagged || state.rateLimit || reconnecting) ? (
+            <SystemNotices
+              status={status}
+              lagged={state.lagged}
+              rateLimit={state.rateLimit}
+              hasEverOpened={hasEverOpened}
+              reconnecting={reconnecting}
+              retryCount={retryCount}
+              retryCountdown={retryCountdown}
+              maxRetries={maxRetries}
+              manualReconnect={manualReconnect}
+              onSwitchAgent={onSwitchAgent}
+            />
+          ) : null
+        }
+      </RateLimitRecoverySection>
 
       {state.startupError && (
         <StartupErrorBanner sessionId={sessionId} message={state.startupError} />
@@ -1013,7 +1034,37 @@ function PendingApproval({
 
 /* ── System notices ──────────────────────────────────────────────── */
 
-function SystemNotices({
+/** Wires the rate-limit handoff banner to the recovery modal. Owns the
+ *  open/close toggle so CockpitView (which is wide and pulls in many
+ *  hooks) does not have to. Exported so the wiring can be unit-tested
+ *  without mounting all of CockpitView. See #1282. */
+export function RateLimitRecoverySection({
+  sessionId,
+  currentAgent,
+  onPrefill,
+  children,
+}: {
+  sessionId: string;
+  currentAgent: string | null;
+  onPrefill: (text: string) => void;
+  children: (renderProps: { onSwitchAgent: () => void }) => React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      {children({ onSwitchAgent: () => setOpen(true) })}
+      <RateLimitRecoveryModal
+        open={open}
+        sessionId={sessionId}
+        currentAgent={currentAgent}
+        onClose={() => setOpen(false)}
+        onPrefill={onPrefill}
+      />
+    </>
+  );
+}
+
+export function SystemNotices({
   status,
   lagged,
   rateLimit,
@@ -1023,6 +1074,7 @@ function SystemNotices({
   retryCountdown,
   maxRetries,
   manualReconnect,
+  onSwitchAgent,
 }: {
   status: CockpitContext["status"];
   lagged: boolean;
@@ -1033,6 +1085,7 @@ function SystemNotices({
   retryCountdown: number;
   maxRetries: number;
   manualReconnect: () => void;
+  onSwitchAgent?: () => void;
 }) {
   const messages: { kind: string; text: string }[] = [];
   // Retry envelope exhausted: the auto-reconnect chain stopped after
@@ -1095,6 +1148,17 @@ function SystemNotices({
           {m.text}
         </div>
       ))}
+      {rateLimit && onSwitchAgent && (
+        <div className="flex items-center justify-end pt-1">
+          <button
+            type="button"
+            onClick={onSwitchAgent}
+            className="shrink-0 rounded-md border border-brand-700 bg-brand-900/40 px-2 py-1 text-[10px] font-mono uppercase tracking-wide text-brand-100 hover:bg-brand-900/60"
+          >
+            Continue in another agent
+          </button>
+        </div>
+      )}
       {retriesExhausted && (
         <div className="flex items-center justify-between gap-3 text-xs text-brand-400">
           <span>Connection lost. Auto-retry stopped.</span>

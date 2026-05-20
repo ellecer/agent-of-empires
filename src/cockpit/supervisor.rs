@@ -407,6 +407,15 @@ impl<S: BroadcastSink> Supervisor<S> {
         self.registry.lock().await.clone()
     }
 
+    /// True iff `name` is registered as an ACP agent. Used by the
+    /// `/cockpit/switch-agent` endpoint to validate the target before
+    /// tearing down the current worker; otherwise an unknown agent
+    /// would only surface at spawn time, leaving the session without a
+    /// worker.
+    pub async fn registry_has_agent(&self, name: &str) -> bool {
+        self.registry.lock().await.get(name).is_some()
+    }
+
     /// Publish a synthetic AgentStartupError event for a session whose
     /// worker never came online. Used by the auto-spawn-after-create
     /// path so the UI shows a remediation hint instead of an empty,
@@ -416,6 +425,93 @@ impl<S: BroadcastSink> Supervisor<S> {
         let seq = next_seq(&self.next_seqs, session_id);
         self.sink
             .publish(session_id, seq, &Event::AgentStartupError { message });
+    }
+
+    /// Publish a synthetic `AgentSwitched` event after a successful
+    /// `/cockpit/switch-agent` operation. Carries the prior and new
+    /// agent registry keys plus the reason (e.g. `"rate_limited"`).
+    /// The reducer uses this to drop transient state tied to the prior
+    /// backend (rate-limit banner, in-flight tool, usage). See #1282.
+    pub fn publish_agent_switched(
+        &self,
+        session_id: &str,
+        from: String,
+        to: String,
+        reason: String,
+    ) -> u64 {
+        let seq = next_seq(&self.next_seqs, session_id);
+        self.sink
+            .publish(session_id, seq, &Event::AgentSwitched { from, to, reason });
+        seq
+    }
+
+    /// Like `shutdown` but waits for the runner process to actually exit
+    /// before returning, so a subsequent `spawn` for the same session id
+    /// doesn't race the SIGTERM and collide on the worker socket file.
+    /// Bounded by `deadline`; on timeout the worker is still removed
+    /// from the in-memory map, so a subsequent spawn won't return
+    /// AlreadyRunning, but the caller should treat it as best-effort
+    /// cleanup. Used by the `/cockpit/switch-agent` path so the new
+    /// agent's spawn binds a clean socket. See #1282.
+    pub async fn shutdown_and_wait(
+        &self,
+        session_id: &str,
+        deadline: std::time::Duration,
+    ) -> Result<(), SupervisorError> {
+        // Snapshot the runner's PID BEFORE shutdown removes the registry
+        // entry, so we can poll for the process to actually die.
+        let pid_before = super::worker_registry::load(session_id)
+            .ok()
+            .flatten()
+            .map(|r| r.pid);
+        match self.shutdown(session_id).await {
+            Ok(()) => {}
+            Err(SupervisorError::UnknownSession(_)) => {
+                // Nothing to wait on; the caller can move on to spawn.
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        }
+        // Poll for the runner subprocess to exit so its socket file
+        // releases. ~deadline/100ms tick; usually claude-agent-acp dies
+        // in <500ms once SIGTERM lands.
+        #[cfg(unix)]
+        if let Some(pid) = pid_before {
+            let start = std::time::Instant::now();
+            while start.elapsed() < deadline {
+                if !super::worker_registry::is_pid_alive(pid) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            // Best-effort socket file removal: the new spawn will bind
+            // <workers_dir>/<session_id>.sock, so a stale inode from
+            // the old runner would collide. terminate_runner_for_session
+            // already removed the registry entry; this cleans up the
+            // socket. Failures (already gone, no perms) are non-fatal.
+            if let Ok(socket_path) = super::worker_registry::socket_path_for(session_id) {
+                if socket_path.exists() {
+                    let _ = std::fs::remove_file(&socket_path);
+                }
+            }
+        }
+        // Cockpit currently runs over Unix sockets only; reaching this
+        // function on a non-Unix host means somebody added a non-Unix
+        // backend without porting the PID-wait + socket-cleanup above.
+        // Warn loudly so the gap is visible in the log rather than
+        // silently returning Ok and leaking a stale socket. Mirrors the
+        // precedent at the agent_unresponsive escalation site below.
+        #[cfg(not(unix))]
+        {
+            let _ = pid_before;
+            tracing::warn!(
+                target: "cockpit.supervisor",
+                session = %session_id,
+                "shutdown_and_wait called on non-Unix host; PID-wait and \
+                 socket cleanup are unimplemented for this platform"
+            );
+        }
+        Ok(())
     }
 
     /// Publish a synthetic `Stopped` event for a session whose turn was
@@ -786,10 +882,25 @@ impl<S: BroadcastSink> Supervisor<S> {
                     // otherwise the next `session/load` would attach to the
                     // same wedged process. See #1196.
                     let mut agent_unresponsive = false;
+                    // Set when the connection task signals a non-crash exit
+                    // due to a provider quota / rate-limit hit. The acp_client
+                    // classifies `errorKind == "rate_limit"` from the adapter
+                    // and emits `Stopped { reason: "rate_limited" }` before
+                    // letting the loop end. Respawning the runner immediately
+                    // would hit the same limit on the next `session/prompt`
+                    // and burn restart budget for nothing, so the drain task
+                    // short-circuits `restart_decision` and removes the
+                    // worker handle. The user retries explicitly via
+                    // `/cockpit/spawn` after reset, or hands off to a
+                    // different ACP backend via `/cockpit/switch-agent`. See
+                    // #1281.
+                    let mut rate_limited = false;
                     while let Some(event) = inbound.recv().await {
                         if let Event::Stopped { reason } = &event {
                             if reason == "agent_unresponsive" {
                                 agent_unresponsive = true;
+                            } else if reason == "rate_limited" {
+                                rate_limited = true;
                             }
                         }
                         // Mirror the agent-assigned id into the cached
@@ -945,6 +1056,23 @@ impl<S: BroadcastSink> Supervisor<S> {
                                 "agent_unresponsive escalation on non-unix: wedged runner kill not implemented; respawn may collide on the runner socket"
                             );
                         }
+                    }
+                    // Rate-limit park: the connection task already emitted
+                    // RateLimit + Stopped{rate_limited}. Skip restart_decision
+                    // entirely so the restart budget stays whole, no synthetic
+                    // AgentStartupError gets published, and the WorkerHandle
+                    // is dropped so a follow-up `/cockpit/spawn` (or the new
+                    // `/cockpit/switch-agent` path) doesn't see AlreadyRunning.
+                    // See #1281.
+                    if rate_limited {
+                        info!(
+                            target: "cockpit.supervisor",
+                            session = %session_id,
+                            "rate-limited; dropping worker handle without respawn"
+                        );
+                        let mut guard = workers.lock().await;
+                        guard.remove(&session_id);
+                        return;
                     }
                     let respawn_config: SpawnConfig =
                         match restart_decision(&workers, &session_id).await {
@@ -2410,6 +2538,73 @@ mod tests {
             }
             other => panic!("expected Event::Stopped, got {other:?}"),
         }
+    }
+
+    /// Drain task must short-circuit `restart_decision` when the
+    /// connection task ends with `Stopped { reason: "rate_limited" }`.
+    /// Verifies the producer/supervisor contract for #1281: rate-limit
+    /// is a non-crash terminal state. The drain task drops the worker
+    /// handle so the next `/cockpit/spawn` or `/cockpit/switch-agent`
+    /// doesn't hit AlreadyRunning, and does NOT emit a synthetic
+    /// AgentStartupError (which would flip the sidebar to Error).
+    #[tokio::test]
+    async fn drain_skips_restart_when_stopped_rate_limited() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+
+        let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel::<Event>(16);
+        let drain = sup.start_drain_task("s-rl".into(), inbound_rx);
+        {
+            let mut workers = sup.workers.lock().await;
+            let (client, _client_tx) = AcpClient::fake_for_test(CockpitSessionId("s-rl".into()));
+            workers.insert(
+                "s-rl".into(),
+                WorkerHandle {
+                    client: Arc::new(client),
+                    // Drain task installed above owns the only handle we
+                    // care about; this field is just a placeholder so
+                    // the WorkerHandle compiles.
+                    drain_task: tokio::spawn(async {}),
+                    restart_history: vec![],
+                    kind: WorkerKind::Stdio,
+                },
+            );
+        }
+
+        // Producer hands off the rate-limit signal before exiting.
+        inbound_tx
+            .send(Event::Stopped {
+                reason: "rate_limited".into(),
+            })
+            .await
+            .unwrap();
+        // Closing the channel mirrors the connection task ending
+        // cleanly with Ok(()) after the rate-limit emission.
+        drop(inbound_tx);
+
+        // Drain task must observe the terminal signal and exit.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), drain)
+            .await
+            .expect("drain task should exit within 2s of inbound close");
+
+        assert!(
+            !sup.workers.lock().await.contains_key("s-rl"),
+            "rate-limited worker handle must be dropped from the workers map"
+        );
+
+        let frames = sink.frames.lock().unwrap();
+        assert!(
+            frames.iter().any(
+                |(_, _, ev)| matches!(ev, Event::Stopped { reason } if reason == "rate_limited")
+            ),
+            "the Stopped{{rate_limited}} signal must be published to the sink"
+        );
+        assert!(
+            !frames
+                .iter()
+                .any(|(_, _, ev)| matches!(ev, Event::AgentStartupError { .. })),
+            "no synthetic AgentStartupError should be emitted on rate-limit"
+        );
     }
 
     /// `Supervisor::shutdown` against an `Stdio` test fixture must NOT

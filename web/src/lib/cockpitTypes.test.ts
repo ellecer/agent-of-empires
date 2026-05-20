@@ -847,6 +847,109 @@ describe("applyEvent / ConversationCompacted", () => {
   });
 });
 
+describe("applyEvent / AgentSwitched", () => {
+  // Cockpit hand-off (#1282) moves the session from one ACP backend
+  // to another. Reducer must drop everything tied to the prior
+  // backend so the UI doesn't show Claude's usage bar / mode pills /
+  // in-flight tool while talking to Codex.
+  it("clears prior-backend transient state and records the handoff", () => {
+    const seeded: CockpitState = {
+      ...emptyCockpitState(),
+      agent: "claude",
+      rateLimit: {
+        status: "limited",
+        resets_at: "2099-01-01T00:00:00Z",
+        kind: "rate_limit",
+      },
+      inFlightTool: {
+        id: "t-1",
+        name: "Read",
+        kind: "read",
+        args_preview: "{}",
+        started_at: new Date().toISOString(),
+      },
+      thinking: true,
+      sessionUsage: { used: 100, size: 200_000 },
+      availableCommands: [
+        { name: "/clear", description: "wipe context", accepts_input: false },
+      ],
+      availableModes: [{ id: "m1", name: "Default" }],
+      currentModeId: "m1",
+      mode: "Plan",
+    };
+    const next = applyEvent(seeded, {
+      session_id: "s-1",
+      seq: 11,
+      event: {
+        AgentSwitched: { from: "claude", to: "codex", reason: "rate_limited" },
+      },
+    });
+    expect(next.agent).toBe("codex");
+    expect(next.rateLimit).toBeNull();
+    expect(next.inFlightTool).toBeNull();
+    expect(next.thinking).toBe(false);
+    expect(next.sessionUsage).toBeNull();
+    expect(next.availableCommands).toEqual([]);
+    expect(next.availableModes).toEqual([]);
+    expect(next.currentModeId).toBeNull();
+    expect(next.mode).toBe("Default");
+    expect(next.lastAgentSwitch).toMatchObject({
+      from: "claude",
+      to: "codex",
+      reason: "rate_limited",
+    });
+    const lastRow = next.activity[next.activity.length - 1];
+    expect(lastRow?.id).toBe("agent-switched-11");
+    expect(lastRow?.text).toContain("claude");
+    expect(lastRow?.text).toContain("codex");
+  });
+
+  it("does not double-apply on replay", () => {
+    const first = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 5,
+      event: {
+        AgentSwitched: { from: "claude", to: "codex", reason: "rate_limited" },
+      },
+    });
+    const second = applyEvent(first, {
+      session_id: "s-1",
+      seq: 5, // same seq; reducer must drop.
+      event: {
+        AgentSwitched: { from: "claude", to: "codex", reason: "rate_limited" },
+      },
+    });
+    expect(second).toBe(first);
+  });
+
+  // The supervisor emits Stopped { user_stopped } from the prior
+  // backend's shutdown immediately before AgentSwitched. That flips
+  // workerStopped (and possibly agentUnresponsive) on. Without an
+  // explicit clear in this reducer the user sees a "worker stopped /
+  // reconnecting" banner stacked on top of the freshly switched
+  // session during the new agent's session/new handshake, which can
+  // take several seconds before AcpSessionAssigned clears it.
+  it("clears stale worker-stopped flags from the prior backend shutdown", () => {
+    const seeded: CockpitState = {
+      ...emptyCockpitState(),
+      agent: "claude",
+      workerStopped: true,
+      workerRestarting: true,
+      agentUnresponsive: true,
+    };
+    const next = applyEvent(seeded, {
+      session_id: "s-1",
+      seq: 13,
+      event: {
+        AgentSwitched: { from: "claude", to: "codex", reason: "rate_limited" },
+      },
+    });
+    expect(next.workerStopped).toBe(false);
+    expect(next.workerRestarting).toBe(false);
+    expect(next.agentUnresponsive).toBe(false);
+  });
+});
+
 describe("turnActive derivation from prompt/stop counters (#1170)", () => {
   // `turnActive` derives from `pendingUserPromptSeq > lastStoppedSeq`.
   // The boolean field is kept on `CockpitState` as a memoised alias so
