@@ -4,6 +4,41 @@ All notable changes to Agent of Empires will be documented in this file.
 
 The format follows [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [1.9.1](https://github.com/njbrake/agent-of-empires/releases/tag/v1.9.1) - 2026-05-26
+
+
+
+### Bug Fixes
+
+- Reconcile completed Codex hook prompts in [#1488](https://github.com/njbrake/agent-of-empires/pull/1488) by [@microHoffman](https://github.com/microHoffman) ([`53112ad`](https://github.com/njbrake/agent-of-empires/commit/53112adcb74f515268043342ddda9539f47c75d7))
+- **tests:** De-flake cockpit live specs with expect.poll backoff in [#1494](https://github.com/njbrake/agent-of-empires/pull/1494) by [@njbrake](https://github.com/njbrake) ([`dd9f0f7`](https://github.com/njbrake/agent-of-empires/commit/dd9f0f7d7c5631f482172f2693549660cc21c4a3))
+- **tui:** Clear hover highlight on keyboard nav in [#1497](https://github.com/njbrake/agent-of-empires/pull/1497) by [@BTForIT](https://github.com/BTForIT) ([`125cc62`](https://github.com/njbrake/agent-of-empires/commit/125cc623faebc9baeb548ce2b6d2ed82679f0390))
+- **tmux:** Detect cursor and antigravity activity in [#1479](https://github.com/njbrake/agent-of-empires/pull/1479) by [@MovieHolic-Plex](https://github.com/MovieHolic-Plex) ([`507360a`](https://github.com/njbrake/agent-of-empires/commit/507360a21aa44f82b64799d06b8bb11b656c1db3))
+- **tui:** Keep live-send preview alive past a single capture failure in [#1501](https://github.com/njbrake/agent-of-empires/pull/1501) by [@njbrake](https://github.com/njbrake) ([`6f85c78`](https://github.com/njbrake/agent-of-empires/commit/6f85c780581743c71f78de86207bc3b9faf816f9))
+- **web:** Allow SPA bootstrap session routes in [#1489](https://github.com/njbrake/agent-of-empires/pull/1489) by [@MovieHolic-Plex](https://github.com/MovieHolic-Plex) ([`6cbf7fe`](https://github.com/njbrake/agent-of-empires/commit/6cbf7fe5d4dcb253ce94ee100e2496fcb5b7f000))
+- **web:** Keep live terminal resize stable in [#1487](https://github.com/njbrake/agent-of-empires/pull/1487) by [@MovieHolic-Plex](https://github.com/MovieHolic-Plex) ([`365c63c`](https://github.com/njbrake/agent-of-empires/commit/365c63cc16a2ab4be73437c32c21d2ec626d41ef))
+- **session:** Force color for codex launches in [#1478](https://github.com/njbrake/agent-of-empires/pull/1478) by [@MovieHolic-Plex](https://github.com/MovieHolic-Plex) ([`2ab9910`](https://github.com/njbrake/agent-of-empires/commit/2ab9910fc724f5961237408a621a39824b5cadda))
+- **tui:** Right-pad row tag to mode-max width so activity column stays stable in [#1460](https://github.com/njbrake/agent-of-empires/pull/1460) by [@BTForIT](https://github.com/BTForIT) ([`5a4b7eb`](https://github.com/njbrake/agent-of-empires/commit/5a4b7eb905ef3a9274a927d84fbc2502293efa4c))
+- **tui:** Remove clipboard tests that leak xclip/wl-copy daemons in [#1518](https://github.com/njbrake/agent-of-empires/pull/1518) by [@njbrake](https://github.com/njbrake) ([`4de1292`](https://github.com/njbrake/agent-of-empires/commit/4de1292044ed1b4a72e0d816d31fcb0a34f5d6bf))
+
+
+### Features
+
+- **tui:** Opt-in live-send as default attach for new sessions in [#1486](https://github.com/njbrake/agent-of-empires/pull/1486) by [@njbrake](https://github.com/njbrake) ([`b70d6f0`](https://github.com/njbrake/agent-of-empires/commit/b70d6f09e0de371e33b0dba8e26ff4eb4e3504fa))
+- **tui:** Click-to-live + attach-mode setting + settings reorg in [#1493](https://github.com/njbrake/agent-of-empires/pull/1493) by [@njbrake](https://github.com/njbrake) ([`3b62036`](https://github.com/njbrake/agent-of-empires/commit/3b6203681352018ba66b93425a8449f22a3862a8))
+- **tui:** Drag-to-select-and-copy in live mode + multi-line paste in [#1502](https://github.com/njbrake/agent-of-empires/pull/1502) by [@njbrake](https://github.com/njbrake) ([`9f84b26`](https://github.com/njbrake/agent-of-empires/commit/9f84b2691d65dc475aa9ed44e1950bfddb252c37))
+- **tui:** Replace g/o cycle bindings with modal pickers in [#1508](https://github.com/njbrake/agent-of-empires/pull/1508) by [@njbrake](https://github.com/njbrake) ([`b740428`](https://github.com/njbrake/agent-of-empires/commit/b740428fd2519f693f5aaf466ce61d73bbd80d19))
+- **tui:** Configurable single-click action on session rows in [#1520](https://github.com/njbrake/agent-of-empires/pull/1520) by [@njbrake](https://github.com/njbrake) ([`aca2fab`](https://github.com/njbrake/agent-of-empires/commit/aca2fabaccc0372c6c3bfd4dd131b321db01323f))
+
+
+### Performance
+
+- **tmux:** Route live-send preview captures through a long-lived tmux -C client in [#1490](https://github.com/njbrake/agent-of-empires/pull/1490) by [@njbrake](https://github.com/njbrake) ([`be9df3e`](https://github.com/njbrake/agent-of-empires/commit/be9df3e41636c3ec4dcd6020777cdfba3abe634a))
+- **tui:** Split-render preview on live-send %output wakes in [#1495](https://github.com/njbrake/agent-of-empires/pull/1495) by [@njbrake](https://github.com/njbrake) ([`7f07de6`](https://github.com/njbrake/agent-of-empires/commit/7f07de66ecc3831281bc511af24898a07b944d47))
+- **tui:** Rework live-send dispatch for reliability and lower latency in [#1519](https://github.com/njbrake/agent-of-empires/pull/1519) by [@njbrake](https://github.com/njbrake) ([`adfc6fc`](https://github.com/njbrake/agent-of-empires/commit/adfc6fc9418c2619b8feb21a4cdb11a84979c57c))
+
+
+**Full Changelog**: https://github.com/njbrake/agent-of-empires/compare/v1.9.0...v1.9.1
 ## [1.9.0](https://github.com/njbrake/agent-of-empires/releases/tag/v1.9.0) - 2026-05-25
 
 
