@@ -1207,6 +1207,43 @@ fn test_t_toggles_view_mode() {
 
 #[test]
 #[serial]
+fn switching_view_retargets_capture_worker_pane() {
+    // The preview's off-thread capture worker follows the displayed pane:
+    // switching agent <-> terminal must resolve to different tmux sessions
+    // so `sync_preview_capture_worker` respawns the worker against the new
+    // pane (instead of the old agent-only behavior). Regression guard for
+    // the responsiveness fix that moved every preview's `tmux capture-pane`
+    // off the render thread.
+    let env = create_test_env_with_sessions(1);
+    let mut view = env.view;
+
+    let agent_pane = view.displayed_pane_tmux_name();
+    assert!(
+        agent_pane.is_some(),
+        "a selected session must resolve a pane"
+    );
+
+    view.handle_key(key(KeyCode::Char('t')), None);
+    assert_eq!(view.view_mode, ViewMode::Terminal);
+    let terminal_pane = view.displayed_pane_tmux_name();
+    assert!(terminal_pane.is_some());
+    assert_ne!(
+        agent_pane, terminal_pane,
+        "agent and terminal panes must differ so the worker retargets on switch",
+    );
+
+    // The reconcile tracks the active target and is idempotent: a changed
+    // pane updates it, the same pane leaves it in place.
+    view.sync_preview_capture_worker(terminal_pane.clone());
+    assert_eq!(view.preview_capture_target, terminal_pane);
+    view.sync_preview_capture_worker(terminal_pane.clone());
+    assert_eq!(view.preview_capture_target, terminal_pane);
+    view.sync_preview_capture_worker(agent_pane.clone());
+    assert_eq!(view.preview_capture_target, agent_pane);
+}
+
+#[test]
+#[serial]
 fn test_enter_returns_attach_terminal_in_terminal_view() {
     let env = create_test_env_with_sessions(1);
     let mut view = env.view;
@@ -8011,54 +8048,6 @@ mod live_send_mode {
         assert_eq!(
             env.view.terminal_preview_cache.content, "",
             "terminal cache must overwrite stale content (no kill switch outside the agent path)"
-        );
-        assert_eq!(env.view.terminal_preview_cache.dimensions, (80, 24));
-        assert_eq!(env.view.terminal_preview_cache.session_id, Some(id));
-    }
-
-    #[test]
-    #[serial]
-    fn refresh_terminal_live_cache_overwrites_on_empty_worker_capture() {
-        // Same invariant as `refresh_terminal_cache_overwrites_on_empty_capture`,
-        // but through the live worker path added for terminal live mode.
-        let mut env = create_test_env_with_sessions(1);
-        let id = env
-            .view
-            .flat_items
-            .iter()
-            .find_map(|item| match item {
-                crate::session::Item::Session { id, .. } => Some(id.clone()),
-                _ => None,
-            })
-            .expect("test env has one session");
-        env.view.selected_session = Some(id.clone());
-        env.view.terminal_preview_cache.content = "stale terminal output".to_string();
-        env.view.terminal_preview_cache.captured_lines = 1;
-        env.view.terminal_preview_cache.dimensions = (10, 10);
-        env.view.terminal_preview_cache.session_id = Some(id.clone());
-
-        let tmux_name = "aoe_test_terminal_live_forward_empty";
-        let worker = crate::tui::home::live_send::LiveCaptureWorker::spawn(
-            tmux_name.to_string(),
-            crate::tui::home::live_send::EmptyCapturePolicy::ForwardEmpty,
-        );
-        worker.set_capture_lines(44);
-        std::thread::sleep(std::time::Duration::from_millis(80));
-        env.view.live_capture_worker = Some(worker);
-        env.view.live_send = Some(LiveSendState {
-            session_id: id.clone(),
-            title: "session0".to_string(),
-            tmux_name: tmux_name.to_string(),
-            target: crate::tui::home::live_send::LiveSendTarget::Terminal,
-            exit_chords: Vec::new(),
-            leader: None,
-        });
-
-        env.view.refresh_terminal_preview_cache_if_needed(80, 24);
-
-        assert_eq!(
-            env.view.terminal_preview_cache.content, "",
-            "terminal live worker must clear stale output on empty capture"
         );
         assert_eq!(env.view.terminal_preview_cache.dimensions, (80, 24));
         assert_eq!(env.view.terminal_preview_cache.session_id, Some(id));
