@@ -1703,17 +1703,17 @@ fn merge_runtime_fields(prior: Instance, mut fresh: Instance) -> Instance {
 }
 
 /// Background task: emit an opt-in telemetry `usage_snapshot` immediately and
-/// every 12 hours, plus a final one on graceful shutdown. The boot
+/// every ~12 hours (jittered), plus a final one on graceful shutdown. The boot
 /// `process_start` is emitted separately by the caller before transport setup.
 /// All sends are best-effort and swallow errors; nothing leaves the box unless
 /// the user opted in and an endpoint is configured.
 fn spawn_serve_snapshot_loop(state: Arc<AppState>) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(12 * 60 * 60));
-        // Skip, not burst, missed ticks: a daemon that was paused (laptop sleep)
-        // must not fire several back-to-back snapshots on resume; the 12h cadence
-        // is what matters, not catching up.
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Jittered period (12h + up to 30m) so installs that boot together don't
+        // snapshot in lockstep; the first tick is still immediate (boot
+        // snapshot). `Delay` avoids a burst of catch-up ticks after a stall.
+        let mut interval = tokio::time::interval(crate::telemetry::snapshot_interval());
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 _ = state.shutdown.cancelled() => {
