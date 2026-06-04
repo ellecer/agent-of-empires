@@ -101,7 +101,8 @@ pub struct CreateProjectBody {
     #[serde(default)]
     pub allow_override: bool,
     /// Default base branch for new worktree branches created against this
-    /// project in a multi-repo workspace. Empty/whitespace is treated as unset.
+    /// project, whether it is the launch repo or an extra repo in a multi-repo
+    /// workspace. Empty/whitespace is treated as unset.
     #[serde(default)]
     pub default_base_branch: Option<String>,
 }
@@ -275,6 +276,85 @@ pub async fn delete_project(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "remove_failed", "message": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct UpdateProjectBody {
+    /// New default base branch. The key is required (a missing key is a
+    /// malformed request); `null` or an empty string clears it, a value sets
+    /// it. Empty/whitespace is normalized to unset by the registry.
+    pub default_base_branch: Option<String>,
+}
+
+#[tracing::instrument(target = "http.api.projects", skip_all, fields(name = %name, scope = q.scope.as_deref().unwrap_or("global")))]
+pub async fn update_project(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Query(q): Query<DeleteQuery>,
+    body: Result<Json<UpdateProjectBody>, axum::extract::rejection::JsonRejection>,
+) -> impl IntoResponse {
+    if state.read_only {
+        tracing::warn!(target: "http.api.projects", reason = "read_only", "rejected update");
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        )
+            .into_response();
+    }
+
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
+
+    let scope = match q.scope.as_deref() {
+        Some("profile") => ProjectScope::Profile,
+        Some("global") | None => ProjectScope::Global,
+        Some(other) => {
+            tracing::warn!(target: "http.api.projects", scope = other, "rejected bad scope");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "bad_scope",
+                    "message": format!("Unknown scope '{}'. Use 'global' or 'profile'.", other),
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    match projects::update_base_branch(&state.profile, scope, &name, body.default_base_branch) {
+        Ok(updated) => {
+            tracing::info!(target: "http.api.projects", name = %updated.name, path = %updated.path, scope = updated.scope.as_str(), "updated project");
+            (StatusCode::OK, Json(ProjectResponse::from(updated))).into_response()
+        }
+        Err(RegistryError::NotFound(msg)) => {
+            tracing::warn!(target: "http.api.projects", reason = "not_found", message = %msg, "rejected update");
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "not_found", "message": msg})),
+            )
+                .into_response()
+        }
+        Err(RegistryError::Conflict(msg)) => {
+            tracing::warn!(target: "http.api.projects", reason = "conflict", message = %msg, "rejected update");
+            (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "conflict", "message": msg})),
+            )
+                .into_response()
+        }
+        Err(RegistryError::Other(e)) => {
+            tracing::error!(target: "http.api.projects", error = %e, "update_failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "update_failed", "message": e.to_string()})),
             )
                 .into_response()
         }
