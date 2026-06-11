@@ -19,6 +19,7 @@ import { MessagePrimitive, ThreadPrimitive, useMessage } from "@assistant-ui/rea
 import { AlertTriangle, Check, ChevronDown, Clock, Info, ListChecks, Paperclip, RotateCcw, X } from "lucide-react";
 
 import { ApprovalCard } from "./ApprovalCard";
+import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import { AcpFileRefContext } from "./AcpFileRefContext";
 import type { FileRef } from "../../lib/fileRef";
 import { ToolDensityToggle, ToolDisplayModeProvider, useToolDensityPref } from "./ToolDisplayMode";
@@ -188,6 +189,7 @@ function AcpChrome({
   maxRetries,
   manualReconnect,
   resolveApproval,
+  resolveElicitation,
   sendPrompt,
   pendingAttachments,
   setPendingAttachments,
@@ -419,6 +421,14 @@ function AcpChrome({
 
             {state.pendingApprovals.map((approval) => (
               <PendingApproval key={approval.nonce} approval={approval} onResolve={resolveApproval} />
+            ))}
+
+            {state.pendingElicitations.map((elicitation) => (
+              <AskUserQuestionCard
+                key={elicitation.nonce}
+                elicitation={elicitation}
+                onResolve={(resolution) => resolveElicitation(elicitation.nonce, resolution)}
+              />
             ))}
           </div>
         </ThreadPrimitive.Viewport>

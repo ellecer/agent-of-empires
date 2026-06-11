@@ -1065,6 +1065,24 @@
       "components": ["web/src/hooks/useAcpSession.ts"]
     },
     {
+      "id": "acp.elicitation-card",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": ["src/components/acp/AskUserQuestionCard.test.tsx", "src/lib/acpTypes.test.ts"],
+      "components": ["web/src/components/acp/AskUserQuestionCard.tsx", "web/src/lib/acpTypes.ts"]
+    },
+    {
+      "id": "acp.elicitation",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/acp-stories/ask-user-question.spec.ts"],
+      "components": [
+        "web/src/components/acp/AskUserQuestionCard.tsx",
+        "web/src/components/acp/StructuredView.tsx",
+        "web/src/hooks/useAcpSession.ts"
+      ]
+    },
+    {
       "id": "acp.force-end-turn-gate",
       "kind": "vitest",
       "risk": "medium",
@@ -1114,7 +1132,6 @@
       "specs": [
         "tests/live/acp-config-pickers.spec.ts",
         "tests/acp-config-pickers-ui.spec.ts",
-        "tests/live/acp-session-model.spec.ts",
         "src/components/acp/SessionConfigControls.test.tsx",
         "src/hooks/useAcpSession.configOption.test.ts"
       ],
