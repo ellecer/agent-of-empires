@@ -58,6 +58,7 @@ import type {
   RejectedPrompt,
   ToolCall,
 } from "../../lib/acpTypes";
+import { pickMemoryRecall } from "../../lib/memoryRecall";
 
 interface Props {
   sessionId: string;
@@ -646,6 +647,7 @@ function AssistantToolCall(props: ToolCallProps) {
     kind: props.toolName,
     args_preview: props.argsText ?? safeStringify(props.args ?? null),
     started_at: startedAt,
+    memory_recall: pickMemoryRecall(props.args, props.argsText),
   };
   const resultContent =
     props.result && typeof props.result === "object" && "content" in (props.result as Record<string, unknown>)
@@ -768,6 +770,7 @@ function groupChildToItem(c: GroupChild): {
     kind: c.toolName,
     args_preview: c.argsText,
     started_at: startedAt,
+    memory_recall: pickMemoryRecall(parsedArgs, c.argsText),
   };
   const result =
     c.result !== undefined
@@ -833,6 +836,7 @@ function AssistantSubagentTask({ argsText }: { argsText?: string }) {
       kind: c.toolName,
       args_preview: c.argsText,
       started_at: startedAt,
+      memory_recall: pickMemoryRecall(parsedArgs, c.argsText),
     };
     const result =
       c.result !== undefined

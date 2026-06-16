@@ -430,7 +430,7 @@ describe("ToolCards memory_recall (claude-agent-acp v0.37.0)", () => {
     expect(list.textContent).toContain("feedback_no_em_dashes.md");
   });
 
-  it("renders synthesize mode with the synthesized text body after expansion", () => {
+  it("renders synthesize mode as markdown with the system-reminder envelope and line numbers stripped", () => {
     const { container, getByRole, getByTestId } = render(
       <Wrap toolKey="claude">
         <ToolCard tool={fixtures.memoryRecallSynthesize} result={undefined} />
@@ -440,7 +440,39 @@ describe("ToolCards memory_recall (claude-agent-acp v0.37.0)", () => {
     expect(container.textContent).toContain("Synthesised memory");
     fireEvent.click(getByRole("button"));
     const body = getByTestId("memory-recall-synthesized");
+    // Body content survives.
     expect(body.textContent).toContain("User is a senior engineer working on agent-of-empires.");
+    expect(body.textContent).toContain("prefers terse output");
+    // Transport noise is gone: no envelope tag text, no cat -n line numbers.
+    expect(body.textContent).not.toContain("system-reminder");
+    expect(body.textContent).not.toMatch(/^\s*\d+\t/m);
+    // Markdown rendered to elements, not raw source.
+    expect(body.querySelector("h1")?.textContent).toBe("User profile");
+    expect(body.querySelectorAll("li").length).toBe(2);
+  });
+
+  it("sanitizes dangerous HTML in synthesized memory before rendering", () => {
+    const tool = makeToolCall({
+      id: "mem-xss",
+      name: "Recalled synthesized memory",
+      kind: "read",
+      args_preview: "{}",
+      memory_recall: {
+        mode: "synthesize",
+        synthesized_text: 'Hi <img src=x onerror="alert(1)"> <a href="javascript:alert(2)">link</a>',
+      },
+    });
+    const { getByRole, getByTestId } = render(
+      <Wrap toolKey="claude">
+        <ToolCard tool={tool} result={undefined} />
+      </Wrap>,
+    );
+    fireEvent.click(getByRole("button"));
+    const body = getByTestId("memory-recall-synthesized");
+    // DOMPurify strips the event handler and the javascript: URL.
+    expect(body.querySelector("img")?.getAttribute("onerror")).toBeNull();
+    expect(body.innerHTML).not.toContain("onerror");
+    expect(body.innerHTML).not.toContain("javascript:");
   });
 });
 
