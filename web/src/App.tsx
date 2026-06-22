@@ -6,6 +6,7 @@ import { clearAcpCache } from "./hooks/useAcpSession";
 import { clearDraft, sweepOrphanDrafts } from "./lib/acpDrafts";
 import { AcpPrefsProvider } from "./lib/acpPrefs";
 import { safeGetItem, safeRemoveItem, safeSetItem } from "./lib/safeStorage";
+import { isAutomatedSession } from "./lib/onboarding";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useLastSessionRestore } from "./hooks/useLastSessionRestore";
 import { useRepoGroups } from "./hooks/useRepoGroups";
@@ -92,6 +93,8 @@ import { TokenEntryPage } from "./components/TokenEntryPage";
 import { LOGIN_REQUIRED_EVENT, TOKEN_EXPIRED_EVENT, resetTokenExpired } from "./lib/fetchInterceptor";
 import { AboutModal } from "./components/AboutModal";
 import { TelemetryConsentModal } from "./components/TelemetryConsentModal";
+import { TipsModal } from "./components/TipsModal";
+import { useTips, shouldAutoPopTips } from "./hooks/useTips";
 import { CommandPalette } from "./components/command-palette/CommandPalette";
 import { DisconnectBanner } from "./components/DisconnectBanner";
 import { ElevationPrompt } from "./components/ElevationPrompt";
@@ -356,9 +359,23 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const [pairedMounted, setPairedMounted] = useState(false);
   const [showSessionWizard, setShowSessionWizard] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const tipsAutoPoppedRef = useRef(false);
+  // Whether the tour was already seen when this page loaded (set in the settings
+  // fetch below). Auto-pop keys off this, not the live tourSeen, so finishing
+  // the tour this session does not then pop tips on top of the first-run flow.
+  const tourSeenAtLoadRef = useRef<boolean | null>(null);
+  // All tips orchestration (open state, mark-seen, the show toggle, the auto-pop
+  // decision) lives in the hook / lib so it stays out of this component and is
+  // unit-tested directly.
+  const tips = useTips();
   const [showPalette, setShowPalette] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [telemetryConsentNeeded, setTelemetryConsentNeeded] = useState(false);
+  // Whether the telemetry status fetch has settled. `telemetryConsentNeeded`
+  // starts false, so before this is true "no consent needed" and "not resolved
+  // yet" look the same; the tips auto-pop waits on this so it can't slip in
+  // before a pending consent modal.
+  const [telemetryConsentKnown, setTelemetryConsentKnown] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 768);
   const keyboardProxyRef = useRef<HTMLTextAreaElement>(null);
 
@@ -562,12 +579,16 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       // Read-only servers can't persist an opt-in choice, so skip the ping.
       if (about && !about.read_only) reportTelemetrySeen("web");
     });
-    void fetchTelemetryStatus().then((status) => {
-      if (!active || !status) return;
-      if (!status.responded && !status.do_not_track) {
-        setTelemetryConsentNeeded(true);
-      }
-    });
+    void fetchTelemetryStatus()
+      .then((status) => {
+        if (!active || !status) return;
+        if (!status.responded && !status.do_not_track) {
+          setTelemetryConsentNeeded(true);
+        }
+      })
+      .finally(() => {
+        if (active) setTelemetryConsentKnown(true);
+      });
     return () => {
       active = false;
     };
@@ -1256,8 +1277,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       const legacySeen = safeGetItem(LEGACY_TOUR_SEEN_KEY) === "1";
       // Treat the legacy local flag as a suppression hint while the migration
       // POST is in flight, so the tour cannot flash before the backend agrees.
-      setTourSeen(backendSeen || legacySeen);
+      const seenAtLoad = backendSeen || legacySeen;
+      setTourSeen(seenAtLoad);
       setTourSeenKnown(true);
+      // Capture whether onboarding was already done at load so completing the
+      // tour this session does not then pop the tip-of-the-day on top of it.
+      tourSeenAtLoadRef.current = seenAtLoad;
       if (legacySeen && !backendSeen) {
         void markWebTourSeen().then((ok) => {
           if (ok) safeRemoveItem(LEGACY_TOUR_SEEN_KEY);
@@ -1306,6 +1331,42 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     onSeen: handleTourSeen,
   });
 
+  // Auto-pop the tip-of-the-day once per load, after onboarding settles, like
+  // GIMP/DBeaver. Gated like the tour: only on a settled dashboard, only when a
+  // tip is unseen and tips are enabled, never while the welcome/telemetry/tour
+  // flows are up, and never in an automated browser session (so the modal can't
+  // intercept the rest of the Playwright suite). Only for users who already
+  // finished onboarding before this load: first-run users get the welcome and
+  // tour, not a tips modal piled on top. Reopen any time from the menu.
+  useEffect(() => {
+    if (tipsAutoPoppedRef.current) return;
+    const gate = shouldAutoPopTips({
+      loaded: tips.loaded,
+      hasUnseen: tips.hasUnseen,
+      tourSeenAtLoad: tourSeenAtLoadRef.current,
+      onboardingReady: tourAutoLaunchReady && welcome.resolved,
+      // Treat "not resolved yet" as pending so tips can't pop ahead of a consent
+      // modal that the in-flight status fetch is about to raise.
+      telemetryPending: !telemetryConsentKnown || telemetryConsentNeeded,
+      tourActive: tour.isTourActive,
+      automated: isAutomatedSession(),
+    });
+    if (!gate) return;
+    tipsAutoPoppedRef.current = true;
+    // Defer one frame so the open happens off the effect body (mirrors the
+    // tour's begin()), keeping the state change out of the effect.
+    const id = requestAnimationFrame(() => tips.open());
+    return () => cancelAnimationFrame(id);
+  }, [
+    tips,
+    tourSeenKnown,
+    tourAutoLaunchReady,
+    welcome.resolved,
+    telemetryConsentKnown,
+    telemetryConsentNeeded,
+    tour.isTourActive,
+  ]);
+
   return (
     <AcpPrefsProvider value={acpPrefs}>
       <div className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden safe-area-inset">
@@ -1323,6 +1384,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           loginRequired={loginRequired}
           isOffline={!!error}
           isDevBuild={isDebugBuild(serverAbout)}
+          onOpenTips={tips.open}
           onGoDashboard={handleGoDashboard}
           sidebarColumnVisible={!showSettings && sidebarOpen}
           rightColumnVisible={isMdUp && !showSettings && !!activeWorkspace && !!activeSession && !diffCollapsed}
@@ -1404,6 +1466,17 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         {tour.tourElement}
 
         {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
+
+        {tips.isOpen && (
+          <TipsModal
+            tips={tips.tips}
+            startIndex={tips.startIndex}
+            enabled={tips.enabled}
+            onMarkSeen={tips.markSeen}
+            onSetEnabled={tips.setEnabled}
+            onClose={tips.close}
+          />
+        )}
 
         {showAbout && <AboutModal onClose={() => setShowAbout(false)} sessionId={activeSessionId} />}
         {telemetryConsentNeeded && <TelemetryConsentModal onChoose={handleTelemetryConsent} />}
