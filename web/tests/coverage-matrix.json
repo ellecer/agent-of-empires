@@ -830,6 +830,23 @@
       "components": ["web/src/App.tsx", "web/src/components/command-palette/CommandPalette.tsx"]
     },
     {
+      "id": "palette.category-tabs",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/command-palette/__tests__/CommandPalette.test.tsx"],
+      "components": [
+        "web/src/components/command-palette/CommandPalette.tsx",
+        "web/src/components/command-palette/groups.ts"
+      ]
+    },
+    {
+      "id": "palette.session-triage",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/hooks/__tests__/useCommandActions.test.tsx"],
+      "components": ["web/src/hooks/useCommandActions.ts", "web/src/App.tsx"]
+    },
+    {
       "id": "sidebar.scratch-group",
       "kind": "mocked-playwright",
       "risk": "medium",
