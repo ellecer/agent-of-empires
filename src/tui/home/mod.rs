@@ -2695,6 +2695,8 @@ impl HomeView {
         let new_pane_dead = update.pane_dead;
 
         if should_update {
+            use crate::tui::status_poller::IdleIntent;
+
             let new_status = update.status;
             let new_error = update.last_error;
             let new_idle_entered_at = update.idle_entered_at;
@@ -2702,18 +2704,27 @@ impl HomeView {
             self.mutate_instance(&update.id, |inst| {
                 inst.status = new_status;
                 inst.last_error = new_error;
-                // Propagate the timestamp the polling clone wrote;
-                // see StatusPoller for why this isn't a simple
-                // `inst.idle_entered_at = …` from inside the poll.
-                inst.idle_entered_at = new_idle_entered_at;
+                // Match on the producer's stated intent for `idle_entered_at`
+                // instead of overloading `None`. See `IdleIntent` in
+                // `status_poller` for the three-variant contract that
+                // replaces the pre-fix `Option<DateTime<Utc>>` (which
+                // conflated "producer observed a transition out of Idle" with
+                // "producer has no observation"). See #2690.
+                match new_idle_entered_at {
+                    IdleIntent::Set(ts) => inst.idle_entered_at = Some(ts),
+                    IdleIntent::Clear => inst.idle_entered_at = None,
+                    IdleIntent::Keep => {}
+                }
                 if new_last_accessed.is_some() {
                     inst.last_accessed_at = new_last_accessed;
                 }
-                // Conditional, not unconditional like idle_entered_at: a
-                // producer that never establishes a baseline (attached_
-                // status_hooks's snapshot, when its own instance clone
-                // hasn't polled yet) must not clear one this instance
-                // already has. See #2690 CodeRabbit follow-up.
+                // A producer that has no baseline yet (`None`) must not
+                // clear one the real instance already has, or every
+                // subsequent poll of that instance re-seeds from `None`
+                // and silently disables restamping on real transitions.
+                // Locked by
+                // [`apply_status_update_propagates_live_status_baseline_from_poller`]
+                // in `src/tui/home/tests.rs`. See #2690.
                 if let Some(baseline) = new_live_status_baseline {
                     inst.live_status_baseline = Some(baseline);
                 }
@@ -5250,7 +5261,7 @@ impl HomeView {
             return;
         };
         let patch = crate::session::PassiveStatusPatch::from_instance(inst);
-        let _ = storage.update(|insts, _groups| {
+        if let Err(e) = storage.update(|insts, _groups| {
             if let Some(disk) = insts.iter_mut().find(|i| i.id == patch.id) {
                 disk.merge_passive_status_patch(&patch);
                 if mark_unread {
@@ -5258,7 +5269,21 @@ impl HomeView {
                 }
             }
             Ok(())
-        });
+        }) {
+            // Best-effort persistence (see method docstring): a write
+            // failure here does not roll back the in-memory update, but
+            // silence would obscure a persistent flock timeout or EIO
+            // loop. The daemon's sibling path in
+            // `api::persist_session_update` logs the same class of
+            // failure at `target: "http.api.sessions"`; log here so a
+            // TUI-only user has parity visibility under
+            // `AOE_LOG_LEVEL=debug`.
+            tracing::warn!(
+                target: "session.store",
+                session_id = %patch.id,
+                "persist_passive_status_transition failed: {e}"
+            );
+        }
     }
 
     /// Atomic per-action mutate: in-memory once, disk via
